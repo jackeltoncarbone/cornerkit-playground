@@ -265,12 +265,39 @@ const CornerKit = (() => {
     return d.join(' ');
   }
 
-  // Aspect-driven auto pick: near-square -> Circle, elongated -> Pill, else Round.
+  // The hand-tuned pill — verbatim from show-studio's Box.GeneratePillPath.
+  // All-bézier caps (no arc), continuous, horizontal. Needs w >= 1.7*h.
+  function pill(w, h) {
+    const x = 0, y = 0;
+    const radius = h / 2;
+    const scaleY = h / 50;
+    const endScale = radius / 25;
+    const curveWidth = 42.5 * endScale;
+    const lc = x + curveWidth;
+    const rc = x + w - curveWidth;
+    const y0 = y, y1 = y + 9 * scaleY, y2 = y + 18 * scaleY,
+          y3 = y + 32 * scaleY, y4 = y + 41 * scaleY, y5 = y + h;
+    const L = { cp1: -15.3, cp2: -27.2, curve: -34.85, tip: -42.5 };
+    const R = { cp1: 15.3, cp2: 27.2, curve: 34.85, tip: 42.5 };
+    return [
+      `M ${lc} ${y0}`,
+      `C ${lc + L.cp1 * endScale} ${y0}, ${lc + L.cp2 * endScale} ${y0}, ${lc + L.curve * endScale} ${y1}`,
+      `C ${lc + L.tip * endScale} ${y2}, ${lc + L.tip * endScale} ${y3}, ${lc + L.curve * endScale} ${y4}`,
+      `C ${lc + L.cp2 * endScale} ${y5}, ${lc + L.cp1 * endScale} ${y5}, ${lc} ${y5}`,
+      `L ${rc} ${y5}`,
+      `C ${rc + R.cp1 * endScale} ${y5}, ${rc + R.cp2 * endScale} ${y5}, ${rc + R.curve * endScale} ${y4}`,
+      `C ${rc + R.tip * endScale} ${y3}, ${rc + R.tip * endScale} ${y2}, ${rc + R.curve * endScale} ${y1}`,
+      `C ${rc + R.cp2 * endScale} ${y0}, ${rc + R.cp1 * endScale} ${y0}, ${rc} ${y0}`,
+      `L ${lc} ${y0}`, 'Z'
+    ].join(' ');
+  }
+
+  // Aspect-driven auto pick: near-square -> Circle, wide -> your Pill, else Round.
   // Independent of the radius slider so the three families always show up.
   function autoResolve(w, h) {
     const ratio = Math.max(w, h) / Math.min(w, h);
     if (ratio < 1.12) return 'Circle';
-    if (ratio > 1.7) return 'Pill';
+    if (w >= h * 1.7) return 'Pill';   // wide only — GeneratePillPath is horizontal
     return 'Round';
   }
 
@@ -282,8 +309,8 @@ const CornerKit = (() => {
     let mode = opts.mode || 'Round';
     if (mode === 'Auto') mode = autoResolve(w, h);
     switch (mode) {
-      // Pill = the same superellipse at full radius; the cap elongates with smoothing.
-      case 'Pill':   return squircle(w, h, maxR, smoothing);
+      // Your GeneratePillPath when wide enough; graceful rounded fallback otherwise.
+      case 'Pill':   return (w >= h * 1.7) ? pill(w, h) : squircle(w, h, maxR, smoothing);
       // Circle = full radius, exponent 2 -> a true circle/ellipse.
       case 'Circle': return squircle(w, h, maxR, 0);
       case 'Scoop':  return concaveRect(w, h, radius, opts.concavity ?? 2.2);
@@ -292,7 +319,7 @@ const CornerKit = (() => {
     }
   }
 
-  return { path, squircle, concaveRect, autoResolve };
+  return { path, squircle, pill, concaveRect, autoResolve };
 })();
 
 /* =========================================================================
@@ -347,7 +374,7 @@ function registerTile(tile) { ro.observe(tile); paintTile(tile); }
 /* ---- Build hero row: one fixed example per mode ---- */
 const HERO = [
   { w: 190, h: 150, forceMode: 'Round',  label: 'Round',  sub: 'superellipse bézier' },
-  { w: 260, h: 96,  forceMode: 'Pill',   label: 'Pill',   sub: 'same curve @ r = h/2' },
+  { w: 260, h: 96,  forceMode: 'Pill',   label: 'Pill',   sub: 'GeneratePillPath (yours)' },
   { w: 150, h: 150, forceMode: 'Circle', label: 'Circle', sub: 'near-square auto' },
   { w: 170, h: 150, forceMode: 'Scoop',  label: 'Scoop',  sub: 'concave n≈2.2' },
   { w: 170, h: 150, forceMode: 'Notch',  label: 'Notch',  sub: 'concave sharp' },
