@@ -154,8 +154,8 @@
   <div class="Controls" role="group" aria-label="CornerKit controls">
     <label>Mode
       <select id="ModeSel">
-        <option value="Auto">Auto (aspect-detect)</option>
-        <option value="Round" selected>Round (superellipse)</option>
+        <option value="Auto" selected>Auto (rect / circle / pill)</option>
+        <option value="Round">Round (superellipse)</option>
         <option value="Pill">Pill</option>
         <option value="Circle">Circle</option>
         <option value="Scoop">Scoop (concave)</option>
@@ -265,13 +265,12 @@ const CornerKit = (() => {
     return d.join(' ');
   }
 
-  // Aspect-driven auto pick (Box.getEffectiveSmoothnessAndPillMode logic).
-  function autoResolve(w, h, radius) {
-    const maxR = Math.min(w, h) / 2;
-    const aspect = w / h;
-    const nearCircle = aspect > 0.7 && aspect < 1.43 && radius >= maxR * 0.9;
-    if (nearCircle) return 'Circle';
-    if (radius >= maxR && w >= h * 1.7) return 'Pill';
+  // Aspect-driven auto pick: near-square -> Circle, elongated -> Pill, else Round.
+  // Independent of the radius slider so the three families always show up.
+  function autoResolve(w, h) {
+    const ratio = Math.max(w, h) / Math.min(w, h);
+    if (ratio < 1.12) return 'Circle';
+    if (ratio > 1.7) return 'Pill';
     return 'Round';
   }
 
@@ -281,7 +280,7 @@ const CornerKit = (() => {
     const radius = (opts.radiusPct ?? 1) * maxR;
     const smoothing = opts.smoothing ?? 0.6;
     let mode = opts.mode || 'Round';
-    if (mode === 'Auto') mode = autoResolve(w, h, radius);
+    if (mode === 'Auto') mode = autoResolve(w, h);
     switch (mode) {
       // Pill = the same superellipse at full radius; the cap elongates with smoothing.
       case 'Pill':   return squircle(w, h, maxR, smoothing);
@@ -323,7 +322,7 @@ function makeTile({ w, h, mode, label, sub }) {
   return tile;
 }
 
-let CONFIG = { mode: 'Round', radiusPct: 0.72, smoothing: 0.6, concavity: 4.5 };
+let CONFIG = { mode: 'Auto', radiusPct: 0.72, smoothing: 0.6, concavity: 4.5 };
 
 function paintTile(tile) {
   const w = tile.clientWidth, h = tile.clientHeight;
