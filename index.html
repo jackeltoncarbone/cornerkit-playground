@@ -140,7 +140,7 @@
   <main>
     <header class="Hero">
       <h1>CornerKit</h1>
-      <p>iOS-grade superellipse corners as an SVG <code>clip-path</code> — with Pill, Circle, Scoop and Notch modes folded in. Every tile below is real glass (<code>backdrop-filter</code>) with a cast shadow and an SVG rim, proving the layered technique.</p>
+      <p>Apple-accurate continuous corners (the <code>figma-squircle</code> formula) as an SVG <code>clip-path</code> — Round, Pill, Circle, Scoop and Notch, all riding one smoothing curve. Every tile is real glass (<code>backdrop-filter</code>) with a cast shadow and an SVG rim, proving the layered technique.</p>
     </header>
 
     <div class="SectionTitle">Modes — one hero per shape</div>
@@ -181,36 +181,67 @@
    Every function returns an SVG path string in the element's own px space.
    ========================================================================= */
 const CornerKit = (() => {
-  const SEG = 22; // samples per corner
+  const SEG = 22;                       // samples per concave corner
+  const toRad = deg => deg * Math.PI / 180;
+  const f = n => Number(n).toFixed(4);   // figma-squircle rounds coords to 4dp
 
-  // p exponent from iOS-style smoothing (0..1). 0 = plain circular arc, up to squircle.
-  const expFromSmoothing = s => 2 + 3 * s;
+  // --- Apple / figma-squircle continuous-corner engine -------------------
+  // Ported from phamfoo/figma-squircle (MIT), itself the Figma "Desperately
+  // seeking squircles" construction: a shrinking circular arc flanked by two
+  // curvature-easing beziers. `preserveSmoothing` keeps smoothing alive even
+  // when radius is maxed (the pill case), instead of clamping it to zero.
+  function cornerParams(cornerRadius, cornerSmoothing, preserveSmoothing, budget) {
+    let p = (1 + cornerSmoothing) * cornerRadius;
+    if (!preserveSmoothing) {
+      const maxSmoothing = budget / cornerRadius - 1;
+      cornerSmoothing = Math.min(cornerSmoothing, maxSmoothing);
+      p = Math.min(p, budget);
+    }
+    const arcMeasure = 90 * (1 - cornerSmoothing);
+    const arcSectionLength = Math.sin(toRad(arcMeasure / 2)) * cornerRadius * Math.SQRT2;
+    const angleAlpha = (90 - arcMeasure) / 2;
+    const p3ToP4 = cornerRadius * Math.tan(toRad(angleAlpha / 2));
+    const angleBeta = 45 * cornerSmoothing;
+    const c = p3ToP4 * Math.cos(toRad(angleBeta));
+    const d = c * Math.tan(toRad(angleBeta));
+    let b = (p - arcSectionLength - c - d) / 3;
+    let a = 2 * b;
+    if (preserveSmoothing && p > budget) {
+      const p1ToP3Max = budget - d - arcSectionLength - c;
+      const minA = p1ToP3Max / 6;
+      const maxB = p1ToP3Max - minA;
+      b = Math.min(b, maxB);
+      a = p1ToP3Max - b;
+      p = Math.min(p, budget);
+    }
+    return { a, b, c, d, p, arcSectionLength, cornerRadius };
+  }
 
-  // Convex rounded rect (Round / Circle). radius clamped, smoothing 0..1.
-  function roundedRect(w, h, radius, smoothing) {
-    const maxR = Math.min(w, h) / 2;
-    const r = Math.min(radius, maxR);
-    const p = expFromSmoothing(smoothing);
-    const d = [`M ${r} 0`, `L ${w - r} 0`];
-    const arc = (fx, fy) => {
-      for (let i = 0; i <= SEG; i++) {
-        const t = (i / SEG) * Math.PI / 2;
-        d.push(`L ${fx(t)} ${fy(t)}`);
-      }
-    };
-    // top-right
-    arc(t => w - r + r * Math.pow(Math.sin(t), 2 / p), t => r - r * Math.pow(Math.cos(t), 2 / p));
-    d.push(`L ${w} ${h - r}`);
-    // bottom-right
-    arc(t => w - r + r * Math.pow(Math.cos(t), 2 / p), t => h - r + r * Math.pow(Math.sin(t), 2 / p));
-    d.push(`L ${r} ${h}`);
-    // bottom-left
-    arc(t => r - r * Math.pow(Math.sin(t), 2 / p), t => h - r + r * Math.pow(Math.cos(t), 2 / p));
-    d.push(`L 0 ${r}`);
-    // top-left
-    arc(t => r - r * Math.pow(Math.cos(t), 2 / p), t => r - r * Math.pow(Math.sin(t), 2 / p));
-    d.push('Z');
-    return d.join(' ');
+  const topRight = ({ cornerRadius: r, a, b, c, d, p, arcSectionLength: s }) =>
+    r ? `c ${f(a)} 0 ${f(a + b)} 0 ${f(a + b + c)} ${f(d)} a ${f(r)} ${f(r)} 0 0 1 ${f(s)} ${f(s)} c ${f(d)} ${f(c)} ${f(d)} ${f(b + c)} ${f(d)} ${f(a + b + c)} `
+      : `l ${f(p)} 0 `;
+  const bottomRight = ({ cornerRadius: r, a, b, c, d, p, arcSectionLength: s }) =>
+    r ? `c 0 ${f(a)} 0 ${f(a + b)} ${f(-d)} ${f(a + b + c)} a ${f(r)} ${f(r)} 0 0 1 ${f(-s)} ${f(s)} c ${f(-c)} ${f(d)} ${f(-(b + c))} ${f(d)} ${f(-(a + b + c))} ${f(d)} `
+      : `l 0 ${f(p)} `;
+  const bottomLeft = ({ cornerRadius: r, a, b, c, d, p, arcSectionLength: s }) =>
+    r ? `c ${f(-a)} 0 ${f(-(a + b))} 0 ${f(-(a + b + c))} ${f(-d)} a ${f(r)} ${f(r)} 0 0 1 ${f(-s)} ${f(-s)} c ${f(-d)} ${f(-c)} ${f(-d)} ${f(-(b + c))} ${f(-d)} ${f(-(a + b + c))} `
+      : `l ${f(-p)} 0 `;
+  const topLeft = ({ cornerRadius: r, a, b, c, d, p, arcSectionLength: s }) =>
+    r ? `c 0 ${f(-a)} 0 ${f(-(a + b))} ${f(d)} ${f(-(a + b + c))} a ${f(r)} ${f(r)} 0 0 1 ${f(s)} ${f(-s)} c ${f(c)} ${f(-d)} ${f(b + c)} ${f(-d)} ${f(a + b + c)} ${f(-d)} `
+      : `l 0 ${f(-p)} `;
+
+  // Squircle rounded rect (Round / Pill / Circle). Uniform corners.
+  function squircle(w, h, radius, smoothing, preserveSmoothing = true) {
+    const budget = Math.min(w, h) / 2;
+    const r = Math.min(radius, budget);
+    const pp = cornerParams(r, smoothing, preserveSmoothing, budget);
+    const p = pp.p;
+    return (
+      `M ${f(w - p)} 0 ` + topRight(pp) +
+      `L ${f(w)} ${f(h - p)} ` + bottomRight(pp) +
+      `L ${f(p)} ${f(h)} ` + bottomLeft(pp) +
+      `L 0 ${f(p)} ` + topLeft(pp) + 'Z'
+    );
   }
 
   // Concave rounded rect (Scoop / Notch). n = exponent: ~2 smooth scoop, high = square notch.
@@ -237,61 +268,35 @@ const CornerKit = (() => {
     return d.join(' ');
   }
 
-  // Pill: straight top/bottom, semicircle caps. Faithful port of Box.GeneratePillPath.
-  function pill(w, h) {
-    const y = 0, x = 0;
-    const radius = h / 2;
-    const scaleY = h / 50;
-    const endScale = radius / 25;
-    const curveWidth = 42.5 * endScale;
-    const lc = x + curveWidth, rc = x + w - curveWidth;
-    const y0 = y, y1 = y + 9 * scaleY, y2 = y + 18 * scaleY, y3 = y + 32 * scaleY, y4 = y + 41 * scaleY, y5 = y + h;
-    const L = { cp1: -15.3, cp2: -27.2, curve: -34.85 };
-    const R = { cp1: 15.3, cp2: 27.2, curve: 34.85 };
-    return [
-      `M ${lc} ${y0}`,
-      `C ${lc + L.cp1 * endScale} ${y0}, ${lc + L.cp2 * endScale} ${y0}, ${lc + L.curve * endScale} ${y1}`,
-      `C ${lc - 42.5 * endScale} ${y2}, ${lc - 42.5 * endScale} ${y3}, ${lc + L.curve * endScale} ${y4}`,
-      `C ${lc + L.cp2 * endScale} ${y5}, ${lc + L.cp1 * endScale} ${y5}, ${lc} ${y5}`,
-      `L ${rc} ${y5}`,
-      `C ${rc + R.cp1 * endScale} ${y5}, ${rc + R.cp2 * endScale} ${y5}, ${rc + R.curve * endScale} ${y4}`,
-      `C ${rc + 42.5 * endScale} ${y3}, ${rc + 42.5 * endScale} ${y2}, ${rc + R.curve * endScale} ${y1}`,
-      `C ${rc + R.cp2 * endScale} ${y0}, ${rc + R.cp1 * endScale} ${y0}, ${rc} ${y0}`,
-      `L ${lc} ${y0}`, 'Z'
-    ].join(' ');
-  }
-
   // Aspect-driven auto pick (Box.getEffectiveSmoothnessAndPillMode logic).
-  function autoResolve(w, h, radius, smoothing) {
+  function autoResolve(w, h, radius) {
     const maxR = Math.min(w, h) / 2;
     const aspect = w / h;
     const nearCircle = aspect > 0.7 && aspect < 1.43 && radius >= maxR * 0.9;
-    if (nearCircle) return { mode: 'Circle' };
-    const isPill = radius >= maxR && w >= h * 1.7;
-    if (isPill) return { mode: 'Pill' };
-    return { mode: 'Round', smoothing };
+    if (nearCircle) return 'Circle';
+    if (radius >= maxR && w >= h * 1.7) return 'Pill';
+    return 'Round';
   }
 
   // Single entry point. opts: { mode, radiusPct (0..1 of maxR), smoothing (0..1), concavity (n) }
   function path(w, h, opts) {
     const maxR = Math.min(w, h) / 2;
     const radius = (opts.radiusPct ?? 1) * maxR;
+    const smoothing = opts.smoothing ?? 0.6;
     let mode = opts.mode || 'Round';
-    let smoothing = opts.smoothing ?? 0.6;
-    if (mode === 'Auto') {
-      const r = autoResolve(w, h, radius, smoothing);
-      mode = r.mode; if (r.smoothing != null) smoothing = r.smoothing;
-    }
+    if (mode === 'Auto') mode = autoResolve(w, h, radius);
     switch (mode) {
-      case 'Pill':   return w >= h * 1.7 ? pill(w, h) : roundedRect(w, h, h / 2, 0.25);
-      case 'Circle': return roundedRect(w, h, maxR, 0.01);
+      // Pill = the same squircle at full radius; smoothing now rides through it.
+      case 'Pill':   return squircle(w, h, maxR, smoothing);
+      // Circle = full radius, smoothing forced off -> a true circle/ellipse.
+      case 'Circle': return squircle(w, h, maxR, 0);
       case 'Scoop':  return concaveRect(w, h, radius, opts.concavity ?? 2.2);
       case 'Notch':  return concaveRect(w, h, radius, Math.max(opts.concavity ?? 4.5, 6) * 3);
-      default:       return roundedRect(w, h, radius, smoothing);
+      default:       return squircle(w, h, radius, smoothing);
     }
   }
 
-  return { path, roundedRect, concaveRect, pill, autoResolve };
+  return { path, squircle, concaveRect, autoResolve };
 })();
 
 /* =========================================================================
@@ -345,8 +350,8 @@ function registerTile(tile) { ro.observe(tile); paintTile(tile); }
 
 /* ---- Build hero row: one fixed example per mode ---- */
 const HERO = [
-  { w: 190, h: 150, forceMode: 'Round',  label: 'Round',  sub: 'superellipse + smoothing' },
-  { w: 260, h: 96,  forceMode: 'Pill',   label: 'Pill',   sub: 'GeneratePillPath' },
+  { w: 190, h: 150, forceMode: 'Round',  label: 'Round',  sub: 'figma-squircle + smoothing' },
+  { w: 260, h: 96,  forceMode: 'Pill',   label: 'Pill',   sub: 'squircle @ r = h/2, smooths' },
   { w: 150, h: 150, forceMode: 'Circle', label: 'Circle', sub: 'near-square auto' },
   { w: 170, h: 150, forceMode: 'Scoop',  label: 'Scoop',  sub: 'concave n≈2.2' },
   { w: 170, h: 150, forceMode: 'Notch',  label: 'Notch',  sub: 'concave sharp' },
